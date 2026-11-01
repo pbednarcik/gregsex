@@ -266,6 +266,24 @@ public class OnigurumaCompiledDifferentialTests
         Assert.True(space.LastWork > 0);
     }
 
+    [Fact]
+    public void AScannerKeepsAKernelsMissForTheWholeString()
+    {
+        // The kernel takes no limit, so its miss holds past the first search's limit. Searching again would run in the
+        // interpreter here, because of the options, and exhaust their budget in the run of x.
+        var scanner = new OnigurumaScanner([
+            OnigurumaPattern.Parse("a", RegexProfiles.OnigurumaTextMate),
+            OnigurumaPattern.Parse("(x+x+)+(?=a)b", RegexProfiles.OnigurumaTextMate).Compile()]);
+        var line = ".a.a" + new string('x', 10) + "a";
+        Assert.True(scanner.FindNextMatch(line, 0, out var index));
+        Assert.Equal(0, index);
+        var options = new RegexMatchOptions { Limits = new RegexMatchLimits(maxWork: 50) };
+        Assert.Equal(RegexSearchStatus.Match, scanner.FindNextMatch(line, 4, out index, options));
+        Assert.Equal(0, index);
+        Assert.Equal(14, scanner.Captures[0].Index);
+        Assert.Equal(0, scanner.LimitExceededCount);
+    }
+
     private static string Subject(JsonNode subject)
         => subject is JsonObject units ? new string(units["units"]!.AsArray().Select(u => (char)u!.GetValue<int>()).ToArray()) : subject.GetValue<string>();
 

@@ -8,10 +8,11 @@ namespace GregsEx;
 
 /// <summary>
 /// Searches several patterns from one position and selects the match that starts first, the earliest pattern on a tie,
-/// as TextMate's scanners (vscode-oniguruma's OnigScanner.findNextMatchSync) do. For string-backed input, each pattern
-/// keeps its last result per string and position and reuses it while it remains valid, as Onigwrap's OnigRegExp does,
-/// except for patterns using \G, whose results depend on the search start. A search that runs out of work is searched
-/// again from later offsets of the string, a bounded number of times.
+/// as TextMate's scanners (vscode-oniguruma's OnigScanner.findNextMatchSync) do. A later pattern is normally searched
+/// only for starts before the best so far. For string-backed input, each pattern keeps its last result per string and
+/// position and reuses it while it remains valid, as Onigwrap's OnigRegExp does, except for patterns using \G, whose
+/// results depend on the search start. A search that runs out of work is searched again from later offsets of the
+/// string, a bounded number of times.
 /// One matcher and one capture buffer serve every pattern; searches allocate nothing once the stacks have grown.
 /// Not thread-safe.
 /// </summary>
@@ -31,6 +32,11 @@ public sealed class OnigurumaScanner
     // out of work.
     private readonly int[] _lastGiveUp;
     private readonly int[] _giveUps;
+    // Per pattern: the last start a cached no match covers (a search stops short of a better pattern's match), the work
+    // of the searches of the cached string, and where its required text last occurs.
+    private readonly int[] _lastLimit;
+    private readonly long[] _lastWork;
+    private readonly int[] _lastRequired;
     private readonly RegexCapture[] _captures;
     private int _captureCount;
     // The compiled kernels' backtracking stack (allocated on first use), and whether they may run: a call with options
@@ -52,6 +58,9 @@ public sealed class OnigurumaScanner
         _lastMatched = new bool[n];
         _lastGiveUp = new int[n];
         _giveUps = new int[n];
+        _lastLimit = new int[n];
+        _lastWork = new long[n];
+        _lastRequired = new int[n];
         var groups = 1;
         for (var i = 0; i < n; i++)
         {
@@ -81,11 +90,17 @@ public sealed class OnigurumaScanner
     /// <summary>Searches whose work ceiling was exhausted; they count as no match, as Onigwrap reports them.</summary>
     public long LimitExceededCount { get; private set; }
 
+    internal OnigMatcher Matcher => _matcher;
+
     // How many times a pattern whose search of a string ran out of work is searched again, with a fresh budget, from a
     // later offset of that string; past them, later offsets reuse the give-up as no match without searching. A fresh
     // search can match where an earlier one ran out, as for Oniguruma searching a new string, but a line that keeps
     // running out of work would otherwise cost a whole budget at every offset a tokenizer searches it from.
     internal const int GiveUpRetries = 2;
+    // The work a pattern's limited searches of one string may do before it goes back to whole searches, which keep the
+    // failure memo. With no such line, a pattern that needs the memo cost hundreds of times as much. Lower values give
+    // up speed: lines of 32,000 characters ran about 4.5 times faster than with no limit at this value, 3.5 at 16,384.
+    private const long BoundedWork = 65_536;
 
     /// <summary>Finds the next match at or after startAt, caching per pattern when input is string-backed.</summary>
     public bool FindNextMatch(ReadOnlyMemory<char> input, int startAt, out int patternIndex)
@@ -165,11 +180,13 @@ public sealed class OnigurumaScanner
         {
             var captures = _lastCaptures[i]!;
             bool matched;
-            var cached = text is not null && !_patterns[i].Program.UsesSearchStart && ReferenceEquals(_lastText[i], text) && _lastStart[i] == textStart
-                && _lastLength[i] == textLength && _lastPosition[i] <= startAt;
+            // Only a start before the best can win: an earlier pattern wins a tie.
+            var limit = bestStart - 1;
+            var sameText = text is not null && ReferenceEquals(_lastText[i], text) && _lastStart[i] == textStart && _lastLength[i] == textLength;
+            var cached = sameText && !_patterns[i].Program.UsesSearchStart && _lastPosition[i] <= startAt;
             // A result found from an earlier offset stays the leftmost from a later one, unless \G ties it to the
-            // search start (Onigwrap's cache misses that case).
-            if (cached && _lastGiveUp[i] < 0 && (!_lastMatched[i] || captures[0] >= startAt))
+            // search start (Onigwrap's cache misses that case). A no match says nothing past its limit.
+            if (cached && _lastGiveUp[i] < 0 && (_lastMatched[i] ? captures[0] >= startAt : _lastLimit[i] >= limit))
             {
                 matched = _lastMatched[i];
             }
@@ -183,9 +200,23 @@ public sealed class OnigurumaScanner
                 // After a give-up, the starts before the attempt that ran out of work were explored without a match.
                 var searchFrom = cached && _lastGiveUp[i] > startAt ? _lastGiveUp[i] : startAt;
                 var pattern = _patterns[i];
+                var work = sameText ? _lastWork[i] : 0;
+                var required = sameText ? _lastRequired[i] : OnigMatcher.RequiredUnknown;
+                // A limit bounds attempts, and \K can report a start before its attempt. A limit also ends the
+                // search's failure memo, so past BoundedWork a string goes back to whole searches.
+                if (pattern.Program.UsesKeep || work > BoundedWork)
+                {
+                    limit = int.MaxValue;
+                }
+
+                // A kernel takes no limit; its result covers the whole string.
+                var covered = int.MaxValue;
                 if (!(_kernels && pattern.PlainKernel is not null && OnigCompiledSearch.TryRun(pattern, input, searchFrom, captures, true, ref _stack, out var status, out _)))
                 {
-                    status = _matcher.Search(pattern.Program, input, searchFrom, captures);
+                    status = _matcher.Search(pattern.Program, input, searchFrom, captures, limit, required);
+                    covered = _matcher.LastCovered;
+                    required = _matcher.LastRequired;
+                    work += _matcher.LastWork;
                 }
 
                 if (status == RegexSearchStatus.LimitExceeded)
@@ -206,12 +237,18 @@ public sealed class OnigurumaScanner
                 matched = status == RegexSearchStatus.Match;
                 if (text is not null)
                 {
-                    _giveUps[i] = (cached && _lastGiveUp[i] >= 0 ? _giveUps[i] : 0) + (status == RegexSearchStatus.LimitExceeded ? 1 : 0);
+                    // A miss searched again stopped at its limit, which says nothing about a failure past it, so the
+                    // count carries over. A match restarts it.
+                    var counting = cached && (_lastGiveUp[i] >= 0 || !_lastMatched[i]);
+                    _giveUps[i] = (counting ? _giveUps[i] : 0) + (status == RegexSearchStatus.LimitExceeded ? 1 : 0);
                     _lastText[i] = text;
                     _lastStart[i] = textStart;
                     _lastLength[i] = textLength;
                     _lastPosition[i] = startAt;
                     _lastMatched[i] = matched;
+                    _lastLimit[i] = covered;
+                    _lastWork[i] = work;
+                    _lastRequired[i] = required;
                     _lastGiveUp[i] = status == RegexSearchStatus.LimitExceeded ? _matcher.LastAttemptStart : -1;
                 }
                 else

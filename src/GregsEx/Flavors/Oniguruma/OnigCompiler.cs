@@ -43,6 +43,7 @@ internal sealed class OnigCompiler
     private int _loops;
     // A counted loop whose iteration count or start a later instruction may read (see MemoSlots).
     private bool _stateLoops;
+    private bool _usesKeep;
     private int _ids;
     private int _snapshots;
     private readonly List<int[]> _loopGroups = [];
@@ -430,6 +431,7 @@ internal sealed class OnigCompiler
             MinLength = MinLength(root),
             LeadingRun = leadingRun,
             UsesSearchStart = compiler._code.Count > 0 && UsesAnchor(root, OnigAnchor.SearchStart),
+            UsesKeep = compiler._usesKeep,
             CallSaves = callSaves,
             CallSaveMax = callSaveMax,
             LoopGroups = compiler._loopGroups.ToArray(),
@@ -656,6 +658,7 @@ internal sealed class OnigCompiler
                 return;
             case OnigNodeKind.Keep:
                 Add(Op.Keep);
+                _usesKeep = true;
                 return;
             case OnigNodeKind.Sequence:
                 EmitSequence(node.Children, follow);

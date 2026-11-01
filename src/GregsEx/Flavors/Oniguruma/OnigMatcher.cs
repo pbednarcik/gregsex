@@ -41,6 +41,21 @@ internal sealed class OnigMatcher
     // plus the units runs consume.
     internal long LastWork => _work;
 
+    // The last start the last search answers for: its limit if that left out a start it could have tried. A required
+    // text that is absent answers for every start, whatever the limit.
+    internal int LastCovered { get; private set; }
+
+    // Where the required text last occurs, -1 if nowhere, or RequiredUnknown if the last search did not look. It depends
+    // only on the input, so a caller searching the same input again passes it back.
+    internal int LastRequired { get; private set; }
+
+    internal const int RequiredUnknown = -2;
+
+    // For tests: searches run, and required-text scans, which read the input at no counted work.
+    internal long Searches { get; private set; }
+
+    internal long RequiredScans { get; private set; }
+
     // Where the last attempt started: after a LimitExceeded search, every start before it was explored without a match.
     internal int LastAttemptStart { get; private set; }
 
@@ -102,14 +117,18 @@ internal sealed class OnigMatcher
         _deadline = deadline;
     }
 
-    // Searches for the leftmost match starting in [startAt, input.Length], under the budget for the whole search
-    // and polling cancellation and the deadline throughout (before any result, even an immediate one). On Match,
-    // captures holds start and end per group (group zero first), -1 for groups that did not participate.
+    // Searches for the leftmost match starting in [startAt, input.Length], no later than limit, under the budget for
+    // the whole search and polling cancellation and the deadline throughout (before any result, even an immediate
+    // one). A match may end past limit, and everything past it stays visible to the pattern. On Match, captures holds
+    // start and end per group (group zero first), -1 for groups that did not participate.
     [MethodImpl(FullOpts)]
-    internal RegexSearchStatus Search(OnigProgram program, ReadOnlySpan<char> input, int startAt, Span<int> captures)
+    internal RegexSearchStatus Search(OnigProgram program, ReadOnlySpan<char> input, int startAt, Span<int> captures, int limit = int.MaxValue, int requiredAt = RequiredUnknown)
     {
         _work = 0;
         _memoOn = false;
+        Searches++;
+        LastCovered = int.MaxValue;
+        LastRequired = requiredAt;
         if (_polls && !Poll(out var stopped))
         {
             return stopped;
@@ -129,25 +148,32 @@ internal sealed class OnigMatcher
         }
 
         // What every match contains lies at or after its start: no start after its last occurrence can match.
-        if (program.Required is { } required)
+        if (program.Required is not null || program.RequiredUnits is not null || program.NotRequiredAscii is not null)
         {
-            var at = input.LastIndexOf(required, StringComparison.Ordinal);
-            if (at < startAt)
+            if (requiredAt == RequiredUnknown)
+            {
+                RequiredScans++;
+                LastRequired = requiredAt = program.Required is { } required
+                    ? input.LastIndexOf(required, StringComparison.Ordinal)
+                    : program.RequiredUnits is not null ? input.LastIndexOfAny(program.RequiredUnits) : input.LastIndexOfAnyExcept(program.NotRequiredAscii!);
+            }
+
+            if (requiredAt < startAt)
             {
                 return RegexSearchStatus.NoMatch;
             }
 
-            last = Math.Min(last, at);
+            last = Math.Min(last, requiredAt);
         }
-        else if (program.RequiredUnits is { } units || program.NotRequiredAscii is not null)
-        {
-            var at = program.RequiredUnits is not null ? input.LastIndexOfAny(program.RequiredUnits) : input.LastIndexOfAnyExcept(program.NotRequiredAscii!);
-            if (at < startAt)
-            {
-                return RegexSearchStatus.NoMatch;
-            }
 
-            last = Math.Min(last, at);
+        if (limit < last)
+        {
+            LastCovered = last = limit;
+        }
+
+        if (last < startAt)
+        {
+            return RegexSearchStatus.NoMatch;
         }
 
         switch (program.StartAnchor)
@@ -170,7 +196,8 @@ internal sealed class OnigMatcher
                             }
                         }
 
-                        var nl = input[s..].IndexOf('\n');
+                        // A newline at or after last starts no line up to last.
+                        var nl = input[s..last].IndexOf('\n');
                         if (nl < 0)
                         {
                             break;
@@ -214,7 +241,7 @@ internal sealed class OnigMatcher
             }
             else if (prefix is not null)
             {
-                var i = input[pos..].IndexOf(prefix, StringComparison.Ordinal);
+                var i = input[pos..Math.Min(end, last + prefix.Length)].IndexOf(prefix, StringComparison.Ordinal);
                 if (i < 0 || (pos += i) > last)
                 {
                     break;

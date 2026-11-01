@@ -88,6 +88,8 @@ internal sealed class OnigProgram
     internal required int MinLength { get; init; }
     // Whether \G occurs: a result then depends on the search start, not only on the match position.
     internal bool UsesSearchStart { get; init; }
+    // Whether \K occurs: a match may then report a start other than the one it was attempted at, even an earlier one.
+    internal bool UsesKeep { get; init; }
     // The pc of an unbounded greedy or possessive run every match starts with (after SaveOpen), or -1. When an
     // attempt at s fails after that run reached e, every start in (s, e] fails too: its run reaches the same e and
     // tries a subset of the same continuations, so the search resumes after e (as Oniguruma does).

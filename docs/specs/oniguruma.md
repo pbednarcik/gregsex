@@ -23,10 +23,13 @@ plan and compile memory) with default match limits. A grammar host, a generator 
 `DontCaptureGroup`. `OnigurumaPattern.Parse`/`TryParse` produce an immutable pattern; `OnigurumaWorkspace`
 (`IsMatch`, `Find`, `FindCaptures` from a start offset over `ReadOnlySpan<char>`) and `OnigurumaScanner` own the
 mutable backtracking storage. `OnigurumaScanner` is TextMate's multi-pattern search (vscode-oniguruma's
-`findNextMatchSync`, Onigwrap's `OnigScanner`): the earliest match start wins, the first pattern on a tie, the search
-stops at a match at the offset, and for string-backed input each pattern reuses its last result for the same string
-while it is still valid (Onigwrap's `OnigRegExp` cache). Warm searches allocate nothing; captures land in caller or
-scanner buffers.
+`findNextMatchSync`, Onigwrap's `OnigScanner`): the earliest match start wins, the first pattern on a tie, and the
+search stops at a match at the offset. A later pattern is normally attempted only at starts before the best so far, as
+`onig_regset_search` narrows each range under `ONIG_REGSET_REGEX_LEAD`. That narrowing compares attempt positions and
+this scanner compares reported starts, so a pattern using `\K` still searches to the end, as does a compiled kernel.
+For string-backed input each pattern reuses its last result for the same string while it is still valid (Onigwrap's
+`OnigRegExp` cache), a no match up to the last start it covered. Warm searches allocate nothing; captures land in
+caller or scanner buffers.
 
 Offsets are UTF-16 code units. `startAt` bounds the match start only: look-behind, `\A`, `^` and `\b` see the whole
 input, and `\G` matches at `startAt`, as `onig_search` with `start` inside the string does.
@@ -120,6 +123,13 @@ work units and before any result, even an immediate one (`Cancelled`, `TimedOut`
 `onig_set_time_limit`), and lower limits; overrides cannot raise the pattern's ceilings. `OnigurumaScanner`'s options
 overloads apply the timeout and cancellation to the whole call and the limits to each pattern's search; a search
 that runs out of work counts as no match, as Onigwrap reports the retry-limit error, and nothing stopped is cached.
+A search limited to the starts before a better match begins without the failure memo below, so once a pattern's
+searches of one string-backed input have done 65,536 work units it searches to the end again, whichever offsets they
+were called with. A limited miss does not reset the count of searches that ran out of work on that string, and where a
+pattern's required text last occurs is found once per string. Other input keeps no per-string state: every search that
+can be limited is, and costs no more than it would unlimited. A limited search cannot run out of work past the best
+start, so `LimitExceededCount` can be lower than with no limit, and a pattern that would have used its retries there
+stays available for the rest of the string.
 As at Oniguruma's `SubexpCallMaxNestLevel` (20), a call nested 19 deep fails that path and the search goes on.
 
 A search that has done 1,024 work units starts a failure memo when what follows each backtrack resume depends only
@@ -180,8 +190,8 @@ generator assembly and binds it with `WithGeneratedKernels` ([compilation.md](co
 oracle built from Oniguruma's source at tag v6.9.10 with the nested negated class fix above ([`tools/oracles/oniguruma`](../../tools/oracles/oniguruma/README.md)):
 hand-written edge cases and every pattern of the shellscript, typescript, javascript, html, css, json, yaml and csharp
 grammars of tm-grammars 1.32.22 over lines of the shikijs/textmate-grammars-themes samples. Scanner selection (earliest
-start, first pattern on a tie, stopping at a match at the offset, the per-string result cache, `\G` patterns not
-cached) has unit tests. The checked-in `oracle differential` compares GregsEx with that oracle over all 15,034
+start, first pattern on a tie, stopping at a match at the offset, starts past the best not searched, the per-string
+result cache, `\G` patterns not cached) has unit tests. The checked-in `oracle differential` compares GregsEx with that oracle over all 15,034
 distinct patterns of the 260 tm-grammars 1.32.22 grammars and every line of the 238 samples: on 2026-10-24 it agreed on
 the validity of every pattern (83 rejected by both) and on all 88,475,049 searches, apart from the OG-005 retry-limit
 boundary (95 native retry-limit errors: 92 LimitExceeded and 3 completed GregsEx searches).
