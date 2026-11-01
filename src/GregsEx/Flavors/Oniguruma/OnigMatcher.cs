@@ -45,8 +45,8 @@ internal sealed class OnigMatcher
     // text that is absent answers for every start, whatever the limit.
     internal int LastCovered { get; private set; }
 
-    // Where the required text last occurs, -1 if nowhere, or RequiredUnknown if the last search did not look. It depends
-    // only on the input, so a caller searching the same input again passes it back.
+    // Where the required text last occurs, -1 if nowhere, or the requiredAt passed if the last search did not look it up.
+    // It depends only on the input, so a caller searching the same input again passes it back.
     internal int LastRequired { get; private set; }
 
     internal const int RequiredUnknown = -2;
@@ -123,6 +123,12 @@ internal sealed class OnigMatcher
     [MethodImpl(FullOpts)]
     internal RegexSearchStatus Search(OnigProgram program, ReadOnlySpan<char> input, int startAt, Span<int> captures, int limit = int.MaxValue, int requiredAt = RequiredUnknown)
     {
+        // The limit bounds attempts, and \K can report a start before its attempt.
+        if (program.UsesKeep)
+        {
+            limit = int.MaxValue;
+        }
+
         _work = 0;
         _memoOn = false;
         LastCovered = int.MaxValue;
@@ -146,23 +152,16 @@ internal sealed class OnigMatcher
         }
 
         // What every match contains lies at or after its start: no start after its last occurrence can match.
-        if (program.Required is not null || program.RequiredUnits is not null || program.NotRequiredAscii is not null)
+        if (program.HasRequired)
         {
             if (requiredAt == RequiredNotKept && limit < last)
             {
                 // The limit bounds the starts, so an occurrence at or after startAt is all a match needs.
-                var rest = input[startAt..];
-                var next = program.Required is { } text
-                    ? rest.IndexOf(text, StringComparison.Ordinal)
-                    : program.RequiredUnits is not null ? rest.IndexOfAny(program.RequiredUnits) : rest.IndexOfAnyExcept(program.NotRequiredAscii!);
-                LastRequired = RequiredUnknown;
-                requiredAt = next < 0 ? -1 : int.MaxValue;
+                requiredAt = FindRequired(program, input[startAt..], fromEnd: false) < 0 ? -1 : int.MaxValue;
             }
             else if (requiredAt is RequiredUnknown or RequiredNotKept)
             {
-                LastRequired = requiredAt = program.Required is { } required
-                    ? input.LastIndexOf(required, StringComparison.Ordinal)
-                    : program.RequiredUnits is not null ? input.LastIndexOfAny(program.RequiredUnits) : input.LastIndexOfAnyExcept(program.NotRequiredAscii!);
+                LastRequired = requiredAt = FindRequired(program, input, fromEnd: true);
             }
 
             if (requiredAt < startAt)
@@ -293,6 +292,22 @@ internal sealed class OnigMatcher
             pos += pos < end && char.IsHighSurrogate(input[pos]) ? 2 : 1;
         }
         return RegexSearchStatus.NoMatch;
+    }
+
+    // The first or last occurrence of the text every match of program contains.
+    private static int FindRequired(OnigProgram program, ReadOnlySpan<char> input, bool fromEnd)
+    {
+        if (program.Required is { } required)
+        {
+            return fromEnd ? input.LastIndexOf(required, StringComparison.Ordinal) : input.IndexOf(required, StringComparison.Ordinal);
+        }
+
+        if (program.RequiredUnits is { } units)
+        {
+            return fromEnd ? input.LastIndexOfAny(units) : input.IndexOfAny(units);
+        }
+
+        return fromEnd ? input.LastIndexOfAnyExcept(program.NotRequiredAscii!) : input.IndexOfAnyExcept(program.NotRequiredAscii!);
     }
 
     private long NextStop() => _polls ? Math.Min(_budget, _work + PollStride) : _budget;

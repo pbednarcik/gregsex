@@ -7,6 +7,9 @@ public class ScannerTests
 {
     private static OnigurumaScanner Scanner(params string[] patterns) => new(patterns, RegexProfiles.OnigurumaTextMate);
 
+    private static OnigurumaScanner Scanner(long maxWork, params string[] patterns)
+        => new(patterns, RegexProfiles.OnigurumaTextMate, new OnigurumaCompileOptions(defaultMatchLimits: new RegexMatchLimits(maxWork: maxWork)));
+
     private static string Repeat(string text, int count) => string.Concat(Enumerable.Repeat(text, count));
 
     [Fact]
@@ -30,10 +33,7 @@ public class ScannerTests
     {
         // The second pattern exhausts a tiny work budget; it is only searched when the first does not match at the
         // offset.
-        var options = new OnigurumaCompileOptions(defaultMatchLimits: new RegexMatchLimits(maxWork: 50));
-        var scanner = new OnigurumaScanner([
-            OnigurumaPattern.Parse("a", RegexProfiles.OnigurumaTextMate, options),
-            OnigurumaPattern.Parse("(x+x+)+(?=a)b", RegexProfiles.OnigurumaTextMate, options)]);
+        var scanner = Scanner(50, "a", "(x+x+)+(?=a)b");
         const string line = "axxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxa";
         Assert.True(scanner.FindNextMatch(line.AsSpan(), 0, out var index));
         Assert.Equal(0, index);
@@ -133,10 +133,7 @@ public class ScannerTests
     public void ALaterPatternIsNotSearchedPastTheBestStart()
     {
         // The second pattern exhausts a tiny work budget, but only in the run of x after the first pattern's match.
-        var options = new OnigurumaCompileOptions(defaultMatchLimits: new RegexMatchLimits(maxWork: 50));
-        var scanner = new OnigurumaScanner([
-            OnigurumaPattern.Parse("a", RegexProfiles.OnigurumaTextMate, options),
-            OnigurumaPattern.Parse("(x+x+)+(?=a)b", RegexProfiles.OnigurumaTextMate, options)]);
+        var scanner = Scanner(50, "a", "(x+x+)+(?=a)b");
         var line = "xa" + new string('x', 40) + "a";
         Assert.True(scanner.FindNextMatch(line.AsSpan(), 0, out var index));
         Assert.Equal(0, index);
@@ -227,12 +224,9 @@ public class ScannerTests
     [InlineData("c", "(?:a|c|ac)*b|z", 20, 2000)]
     public void ALongWalkOfStoppedSearchesKeepsItsLastToken(string separator, string pattern, int repeats, long maxWork)
     {
-        var options = new OnigurumaCompileOptions(defaultMatchLimits: new RegexMatchLimits(maxWork: maxWork));
-        var scanner = new OnigurumaScanner([
-            OnigurumaPattern.Parse(separator, RegexProfiles.OnigurumaTextMate, options),
-            OnigurumaPattern.Parse(pattern, RegexProfiles.OnigurumaTextMate, options)]);
+        var scanner = Scanner(maxWork, separator, pattern);
         var line = separator == "c"
-            ? string.Concat(Enumerable.Repeat("ac", repeats)) + "Xz"
+            ? Repeat("ac", repeats) + "Xz"
             : string.Join(", ", Enumerable.Range(0, repeats).Select(i => "name" + i)) + ", 42;";
         var offset = 0;
         var last = -1;
@@ -251,10 +245,7 @@ public class ScannerTests
     public void AStartTiedWithTheBestIsNotAttempted()
     {
         // An attempt at the tied start would exhaust the tiny budget, and could not win.
-        var options = new OnigurumaCompileOptions(defaultMatchLimits: new RegexMatchLimits(maxWork: 50));
-        var scanner = new OnigurumaScanner([
-            OnigurumaPattern.Parse("a", RegexProfiles.OnigurumaTextMate, options),
-            OnigurumaPattern.Parse("(a+a+)+(?=b)c", RegexProfiles.OnigurumaTextMate, options)]);
+        var scanner = Scanner(50, "a", "(a+a+)+(?=b)c");
         Assert.True(scanner.FindNextMatch(("." + new string('a', 40) + "b").AsSpan(), 0, out var index));
         Assert.Equal(0, index);
         Assert.Equal(0, scanner.LimitExceededCount);
@@ -319,11 +310,8 @@ public class ScannerTests
         // Each search of a run of x completes within the budget, so bounded searches alone would never give up, on a
         // line of any length. Once they have cost enough, a whole search does, and past the retries the rest of the
         // string reuses the give-up without searching.
-        var options = new OnigurumaCompileOptions(defaultMatchLimits: new RegexMatchLimits(maxWork: 200));
-        var scanner = new OnigurumaScanner([
-            OnigurumaPattern.Parse("a", RegexProfiles.OnigurumaTextMate, options),
-            OnigurumaPattern.Parse("(x+x+)+(?=a)b", RegexProfiles.OnigurumaTextMate, options)]);
-        var line = string.Concat(Enumerable.Repeat("xxxxa", 2000));
+        var scanner = Scanner(200, "a", "(x+x+)+(?=a)b");
+        var line = Repeat("xxxxa", 2000);
         long exceededBeforeTheLastRuns = 0;
         for (var offset = 0; offset < line.Length; offset += 5)
         {
@@ -345,11 +333,8 @@ public class ScannerTests
     public void ANewStringStartsItsBoundedSearchesOver()
     {
         // The work of one string does not send the next one to whole searches, which would exhaust the tiny budget.
-        var options = new OnigurumaCompileOptions(defaultMatchLimits: new RegexMatchLimits(maxWork: 200));
-        var scanner = new OnigurumaScanner([
-            OnigurumaPattern.Parse("a", RegexProfiles.OnigurumaTextMate, options),
-            OnigurumaPattern.Parse("(x+x+)+(?=a)b", RegexProfiles.OnigurumaTextMate, options)]);
-        var line = string.Concat(Enumerable.Repeat("xxxxa", 2000));
+        var scanner = Scanner(200, "a", "(x+x+)+(?=a)b");
+        var line = Repeat("xxxxa", 2000);
         for (var offset = 0; offset < line.Length; offset += 5)
         {
             scanner.FindNextMatch(line, offset, out _);
@@ -405,7 +390,6 @@ public class ScannerTests
         Assert.Equal(-1, matcher.LastRequired);
         // A caller that keeps nothing gets a limited search's answer from the next occurrence alone.
         Assert.Equal(RegexSearchStatus.Match, matcher.Search(program, "a.z".AsSpan(), 0, captures, limit: 0, requiredAt: OnigMatcher.RequiredNotKept));
-        Assert.Equal(OnigMatcher.RequiredUnknown, matcher.LastRequired);
         Assert.Equal(RegexSearchStatus.NoMatch, matcher.Search(program, "a.y".AsSpan(), 0, captures, limit: 0, requiredAt: OnigMatcher.RequiredNotKept));
     }
 
@@ -414,10 +398,7 @@ public class ScannerTests
     {
         // Each run of a exhausts the budget, and the search of the gap after it completes, having stopped short of the
         // next run. The first failure is still the string's, so past the retries the pattern is not searched again.
-        var options = new OnigurumaCompileOptions(defaultMatchLimits: new RegexMatchLimits(maxWork: 50));
-        var scanner = new OnigurumaScanner([
-            OnigurumaPattern.Parse(";", RegexProfiles.OnigurumaTextMate, options),
-            OnigurumaPattern.Parse("(?:a|aa)*b|z", RegexProfiles.OnigurumaTextMate, options)]);
+        var scanner = Scanner(50, ";", "(?:a|aa)*b|z");
         var line = Repeat(Repeat("a", 20) + "X;.;", 300) + "z";
         var offset = 0;
         var foundZ = false;
@@ -435,10 +416,7 @@ public class ScannerTests
     public void AMatchRestartsTheStringsRetries()
     {
         // Two failures, then a match, three times over: no stretch uses up the retries, so every z is found.
-        var options = new OnigurumaCompileOptions(defaultMatchLimits: new RegexMatchLimits(maxWork: 50));
-        var scanner = new OnigurumaScanner([
-            OnigurumaPattern.Parse(";", RegexProfiles.OnigurumaTextMate, options),
-            OnigurumaPattern.Parse("(?:a|aa)*b|z", RegexProfiles.OnigurumaTextMate, options)]);
+        var scanner = Scanner(50, ";", "(?:a|aa)*b|z");
         var run = Repeat("a", 20) + "X;";
         var line = Repeat(run + run + "z", 3) + ";";
         var offset = 0;

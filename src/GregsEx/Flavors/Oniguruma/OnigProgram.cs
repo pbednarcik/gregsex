@@ -85,6 +85,7 @@ internal sealed class OnigProgram
     // RequiredUnits, or IndexOfAnyExcept over the ASCII units outside a set that also admits non-ASCII units.
     internal SearchValues<char>? RequiredUnits { get; init; }
     internal SearchValues<char>? NotRequiredAscii { get; init; }
+    internal bool HasRequired => Required is not null || RequiredUnits is not null || NotRequiredAscii is not null;
     internal required int MinLength { get; init; }
     // Whether \G occurs: a result then depends on the search start, not only on the match position.
     internal bool UsesSearchStart { get; init; }

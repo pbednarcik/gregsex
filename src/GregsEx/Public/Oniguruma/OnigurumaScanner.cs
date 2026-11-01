@@ -200,9 +200,9 @@ public sealed class OnigurumaScanner
                 var pattern = _patterns[i];
                 var work = sameText ? _lastWork[i] : 0;
                 var required = sameText ? _lastRequired[i] : text is null ? OnigMatcher.RequiredNotKept : OnigMatcher.RequiredUnknown;
-                // A limit bounds attempts, and \K can report a start before its attempt. A limit also ends the
-                // search's failure memo, so past BoundedWork a string goes back to whole searches.
-                if (pattern.Program.UsesKeep || work > BoundedWork)
+                // A limit ends the search's failure memo, so past BoundedWork a string goes back to whole searches.
+                // The matcher itself ignores it for \K.
+                if (work > BoundedWork)
                 {
                     limit = int.MaxValue;
                 }
