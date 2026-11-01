@@ -110,8 +110,8 @@ with `ONIG_OPTION_CAPTURE_GROUP` by vscode-oniguruma (UTF-8) and Onigwrap (UTF-1
   before the best so far, as `ONIG_REGSET_REGEX_LEAD` does, since a later start cannot win: a tokenizer's rule misses
   most of the line, and without the bound its misses cost time proportional to the line for every token. A pattern
   using `\K` searches to the end, because its reported start need not be its attempt start, and so does a kernel,
-  which takes no limit. Past 65,536 work on one string a pattern goes back to searching to the end, because a bounded
-  search loses the failure memo. Selection is the same except where a search would have run out of work past the best
+  which takes no limit. Past 65,536 work in searches of one string that the bound stopped short, a pattern goes back to
+  searching to the end, because a bounded search loses the failure memo. Selection is the same except where a search would have run out of work past the best
   start, or a result kept from an earlier offset would have differed from a fresh search.
   Measured on TextMateSharp over `char[]` lines, which the per-string cache cannot serve: 1.6 to 2.6 times faster on
   ordinary files, 12 to 19 times on lines of 2,000 to 32,000 characters. Over `string` lines: 1.1 to 2.0 and 1.9 to 6.0

@@ -124,10 +124,11 @@ work units and before any result, even an immediate one (`Cancelled`, `TimedOut`
 overloads apply the timeout and cancellation to the whole call and the limits to each pattern's search; a search
 that runs out of work counts as no match, as Onigwrap reports the retry-limit error, and nothing stopped is cached.
 A search limited to the starts before a better match begins without the failure memo below, so once a pattern's
-searches of one string-backed input have done 65,536 work units it searches to the end again, whichever offsets they
-were called with. A limited miss does not reset the count of searches that ran out of work on that string, and where a
+searches of one string-backed input that the limit stopped short have done 65,536 work units it searches to the end
+again, whichever offsets they were called with; searches that ran out of work are not counted, since their retries bound
+them. A limited miss does not reset the count of searches that ran out of work on that string, and where a
 pattern's required text last occurs is found once per string. Other input keeps no per-string state: every search that
-can be limited is, and costs no more than it would unlimited. A limited search cannot run out of work past the best
+can be limited is, looks only for the next occurrence of its required text, and costs no more than it would unlimited. A limited search cannot run out of work past the best
 start, so `LimitExceededCount` can be lower than with no limit, and a pattern that would have used its retries there
 stays available for the rest of the string.
 As at Oniguruma's `SubexpCallMaxNestLevel` (20), a call nested 19 deep fails that path and the search goes on.

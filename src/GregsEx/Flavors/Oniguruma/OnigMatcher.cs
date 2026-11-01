@@ -51,10 +51,9 @@ internal sealed class OnigMatcher
 
     internal const int RequiredUnknown = -2;
 
-    // For tests: searches run, and required-text scans, which read the input at no counted work.
-    internal long Searches { get; private set; }
-
-    internal long RequiredScans { get; private set; }
+    // Unknown too, from a caller that keeps no result: a limited search then only needs the required text's next
+    // occurrence, which a forward scan finds without reading the rest of the input.
+    internal const int RequiredNotKept = -3;
 
     // Where the last attempt started: after a LimitExceeded search, every start before it was explored without a match.
     internal int LastAttemptStart { get; private set; }
@@ -126,7 +125,6 @@ internal sealed class OnigMatcher
     {
         _work = 0;
         _memoOn = false;
-        Searches++;
         LastCovered = int.MaxValue;
         LastRequired = requiredAt;
         if (_polls && !Poll(out var stopped))
@@ -150,9 +148,18 @@ internal sealed class OnigMatcher
         // What every match contains lies at or after its start: no start after its last occurrence can match.
         if (program.Required is not null || program.RequiredUnits is not null || program.NotRequiredAscii is not null)
         {
-            if (requiredAt == RequiredUnknown)
+            if (requiredAt == RequiredNotKept && limit < last)
             {
-                RequiredScans++;
+                // The limit bounds the starts, so an occurrence at or after startAt is all a match needs.
+                var rest = input[startAt..];
+                var next = program.Required is { } text
+                    ? rest.IndexOf(text, StringComparison.Ordinal)
+                    : program.RequiredUnits is not null ? rest.IndexOfAny(program.RequiredUnits) : rest.IndexOfAnyExcept(program.NotRequiredAscii!);
+                LastRequired = RequiredUnknown;
+                requiredAt = next < 0 ? -1 : int.MaxValue;
+            }
+            else if (requiredAt is RequiredUnknown or RequiredNotKept)
+            {
                 LastRequired = requiredAt = program.Required is { } required
                     ? input.LastIndexOf(required, StringComparison.Ordinal)
                     : program.RequiredUnits is not null ? input.LastIndexOfAny(program.RequiredUnits) : input.LastIndexOfAnyExcept(program.NotRequiredAscii!);

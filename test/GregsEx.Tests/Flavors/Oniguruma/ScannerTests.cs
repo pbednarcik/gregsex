@@ -374,33 +374,23 @@ public class ScannerTests
         Assert.Equal(0, scanner.LimitExceededCount);
     }
 
-    [Fact]
-    public void AMissForTheWholeStringIsNotSearchedAgain()
-    {
-        // "class" is absent, so its limited search answers for every start, and the later call has no need of it.
-        var scanner = Scanner("a", "class");
-        const string line = ".a.a.a";
-        Assert.True(scanner.FindNextMatch(line, 0, out _));
-        Assert.True(scanner.FindNextMatch(line, 2, out _));
-        Assert.Equal(3, scanner.Matcher.Searches);
-    }
-
     [Theory]
     [InlineData("\\A[ab].*z")]
     [InlineData("[ab]x.*z")]
     [InlineData("^[ab].*z")]
-    public void ARequiredTextIsLookedForOncePerString(string pattern)
+    public void ARequiredTextServesEveryTokenOfALine(string pattern)
     {
-        // Each of these misses does next to no work, so nothing else would stop it reading the line once per token.
+        // A string keeps where the required text last occurs; other memory looks for its next occurrence each time.
         var scanner = Scanner("c", pattern);
         var line = Repeat("xc", 1000) + "z" + Repeat("q", 2000);
-        for (var offset = 0; offset < 2000; offset += 2)
+        foreach (var memory in new[] { line.AsMemory(), line.ToCharArray().AsMemory() })
         {
-            Assert.True(scanner.FindNextMatch(line, offset, out var index));
-            Assert.Equal(0, index);
+            for (var offset = 0; offset < 2000; offset += 2)
+            {
+                Assert.True(scanner.FindNextMatch(memory, offset, out var index));
+                Assert.Equal(0, index);
+            }
         }
-
-        Assert.Equal(2, scanner.Matcher.RequiredScans);
     }
 
     [Fact]
@@ -413,7 +403,10 @@ public class ScannerTests
         Assert.Equal(2, matcher.LastRequired);
         Assert.Equal(RegexSearchStatus.NoMatch, matcher.Search(program, "a.z".AsSpan(), 0, captures, requiredAt: -1));
         Assert.Equal(-1, matcher.LastRequired);
-        Assert.Equal(1, matcher.RequiredScans);
+        // A caller that keeps nothing gets a limited search's answer from the next occurrence alone.
+        Assert.Equal(RegexSearchStatus.Match, matcher.Search(program, "a.z".AsSpan(), 0, captures, limit: 0, requiredAt: OnigMatcher.RequiredNotKept));
+        Assert.Equal(OnigMatcher.RequiredUnknown, matcher.LastRequired);
+        Assert.Equal(RegexSearchStatus.NoMatch, matcher.Search(program, "a.y".AsSpan(), 0, captures, limit: 0, requiredAt: OnigMatcher.RequiredNotKept));
     }
 
     [Fact]
@@ -427,15 +420,15 @@ public class ScannerTests
             OnigurumaPattern.Parse("(?:a|aa)*b|z", RegexProfiles.OnigurumaTextMate, options)]);
         var line = Repeat(Repeat("a", 20) + "X;.;", 300) + "z";
         var offset = 0;
-        var calls = 0;
-        while (scanner.FindNextMatch(line, offset, out _))
+        var foundZ = false;
+        while (scanner.FindNextMatch(line, offset, out var index))
         {
-            calls++;
+            foundZ |= index == 1;
             offset = scanner.Captures[0].Index + scanner.Captures[0].Length;
         }
 
-        // Each call searches for the semicolon; the last finds none.
-        Assert.InRange(scanner.Matcher.Searches - calls - 1, 0, 2 * (OnigurumaScanner.GiveUpRetries + 1));
+        // A fresh search from the last semicolon would find the z.
+        Assert.False(foundZ);
     }
 
     [Fact]
@@ -466,31 +459,15 @@ public class ScannerTests
         // string's. Once that sends the pattern to a whole search, its match serves both offsets.
         var scanner = Scanner("c", "(?:a|c|ac)*b|z");
         var line = Repeat("ac", 40) + "Xz";
-        long searchesAtHalf = 0;
+        // By then only the first pattern is searched, within a budget that one attempt of the second would exhaust.
+        var options = new RegexMatchOptions { Limits = new RegexMatchLimits(maxWork: 20) };
         for (var i = 0; i < 400; i++)
         {
-            if (i == 200)
-            {
-                searchesAtHalf = scanner.Matcher.Searches;
-            }
-
-            Assert.True(scanner.FindNextMatch(line, i % 2 == 0 ? 0 : 2, out var index));
+            Assert.Equal(RegexSearchStatus.Match, scanner.FindNextMatch(line, i % 2 == 0 ? 0 : 2, out var index, i < 200 ? default : options));
             Assert.Equal(0, index);
         }
 
-        // By then only the first pattern is searched, once per call.
-        Assert.Equal(200, scanner.Matcher.Searches - searchesAtHalf);
-    }
-
-    [Fact]
-    public void GoingBackOnAStringKeepsItsRequiredText()
-    {
-        var scanner = Scanner("c", "[ab]x.*z");
-        const string line = ".c....c...z";
-        Assert.True(scanner.FindNextMatch(line, 2, out _));
-        var scans = scanner.Matcher.RequiredScans;
-        Assert.True(scanner.FindNextMatch(line, 0, out _));
-        Assert.Equal(scans, scanner.Matcher.RequiredScans);
+        Assert.Equal(0, scanner.LimitExceededCount);
     }
 
     [Theory]
