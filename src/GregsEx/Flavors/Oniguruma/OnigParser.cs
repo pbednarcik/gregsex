@@ -292,7 +292,7 @@ internal sealed class OnigParser
     private static (int Length, int[]? Members) LongestFold(List<OnigNode> run, int at)
     {
         var best = (0, (int[]?)null);
-        foreach (var (fold, members) in OnigUnicode.MultiFolds)
+        foreach (var (fold, members) in OnigUnicode.MultiFoldsStartingWith(OnigUnicode.Fold(run[at].Value)))
         {
             if (fold.Length <= best.Item1 || at + fold.Length > run.Count)
             {
@@ -313,17 +313,7 @@ internal sealed class OnigParser
         return best;
     }
 
-    private static (int[] Fold, int[] Members)? FoldOf(int cp)
-    {
-        foreach (var entry in OnigUnicode.MultiFolds)
-        {
-            if (Array.IndexOf(entry.Members, cp) >= 0)
-            {
-                return entry;
-            }
-        }
-        return null;
-    }
+    private static (int[] Fold, int[] Members)? FoldOf(int cp) => OnigUnicode.MultiFoldOf(cp);
 
     private static OnigCharSet CaseClosedSet(int[] members)
     {

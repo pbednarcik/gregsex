@@ -166,6 +166,61 @@ internal static class OnigUnicode
 
     private static IReadOnlyList<(int[] Fold, int[] Members)>? s_multiFolds;
 
+    // The parser looks folds up once per ignore-case character, so both lookups are indexed rather than scanned. Built
+    // with plain loops and an int-valued member index: GroupBy and a tuple-valued Dictionary cost about 2 ms of JIT on
+    // the first ignore-case parse of a process, against 0.3 ms this way (measured on .NET 10).
+    private static Dictionary<int, (int[] Fold, int[] Members)[]>? s_multiFoldsByFirst;
+    private static Dictionary<int, int>? s_multiFoldByMember;
+
+    // The folds to several code points that start with cp, in table order; empty for most code points.
+    internal static ReadOnlySpan<(int[] Fold, int[] Members)> MultiFoldsStartingWith(int cp)
+        => (s_multiFoldsByFirst ??= IndexMultiFoldsByFirst()).TryGetValue(cp, out var folds) ? folds : default;
+
+    // The first fold to several code points that cp is a member of, or null.
+    internal static (int[] Fold, int[] Members)? MultiFoldOf(int cp)
+        => (s_multiFoldByMember ??= IndexMultiFoldsByMember()).TryGetValue(cp, out var entry) ? MultiFolds[entry] : null;
+
+    private static Dictionary<int, (int[] Fold, int[] Members)[]> IndexMultiFoldsByFirst()
+    {
+        var lists = new Dictionary<int, List<(int[] Fold, int[] Members)>>();
+        foreach (var entry in MultiFolds)
+        {
+            if (!lists.TryGetValue(entry.Fold[0], out var list))
+            {
+                lists[entry.Fold[0]] = list = [];
+            }
+
+            list.Add(entry);
+        }
+
+        var index = new Dictionary<int, (int[] Fold, int[] Members)[]>(lists.Count);
+        foreach (var pair in lists)
+        {
+            index[pair.Key] = pair.Value.ToArray();
+        }
+
+        return index;
+    }
+
+    // Each member's first fold, as an index into MultiFolds.
+    private static Dictionary<int, int> IndexMultiFoldsByMember()
+    {
+        var index = new Dictionary<int, int>();
+        var folds = MultiFolds;
+        for (var entry = 0; entry < folds.Count; entry++)
+        {
+            foreach (var member in folds[entry].Members)
+            {
+                if (!index.ContainsKey(member))
+                {
+                    index[member] = entry;
+                }
+            }
+        }
+
+        return index;
+    }
+
     private static IReadOnlyList<(int[] Fold, int[] Members)> LoadMultiFolds()
     {
         var data = OnigurumaUnicodeData.MultiFolds;
