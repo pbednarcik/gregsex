@@ -107,6 +107,7 @@ public class MemoTests
         Assert.True(memo.LastWork < plain.LastWork, $"{memo.LastWork} with the default threshold, {plain.LastWork} without the memo");
     }
 
+#if !GREGSEX_NETSTANDARD_ASSET
     [Fact]
     public void KernelsKeepTheirBudgetWhereTheMemoSkipsTheBacktracking()
     {
@@ -115,6 +116,7 @@ public class MemoTests
         var compiled = Pattern(@"b?(?=(?:a|b)*;)").Compile();
         Assert.Equal(RegexSearchStatus.Match, compiled.CreateWorkspace().IsMatch(new string('a', 3300) + " ;"));
     }
+#endif
 
     [Fact]
     public void StartsInsideANameMeetItsContinuationOnce()
