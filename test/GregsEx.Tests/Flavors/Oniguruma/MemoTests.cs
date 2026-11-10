@@ -214,6 +214,70 @@ public class MemoTests
         Assert.True(compared > 20000, $"{compared} searches");
     }
 
+    // One pattern per rule that keeps a resume out of the memo: giving that resume a slot changes the result here.
+    [Theory]
+    // Inside a called group: the same body returns to different callers.
+    [InlineData(@"(?<g>a|ab)?(?<h>b)?\g<g>$", "aa bab")]
+    [InlineData(@"(?<g>a|ab)?(?<h>b)?\g<g>$", "aa\n\naaaab")]
+    // Inside an atomic group or a possessive loop: its end drops alternatives that never failed.
+    [InlineData(@"(b|aa)*+aa\s", "aa baa\n baab")]
+    [InlineData(@"(?>.|[^;])*+\s", "bbabb ab")]
+    [InlineData(@"((?>ab|a)++a)+?", "a\naaaaa\nab ")]
+    // Inside a look-ahead: its end continues from where it was entered.
+    [InlineData(@"(?!(?:.a)*)", "a;  aa a a ")]
+    [InlineData(@"(?!(^a)*)", "aaab\nb")]
+    // Inside a look-behind: its body ends at the position it was entered from.
+    [InlineData(@"[ab]*(?<=(?:a|bb)(b))", "\nabb a \naa\n")]
+    [InlineData(@"(?:b|ba)?(?<=(?:a|bb)(b))", " aabb ;b;\nb")]
+    // A counted loop outside them: its count steers the resume (no memo at all).
+    [InlineData(@"(?:.+a){2}", "a  a\naa;baab")]
+    [InlineData(@"(?:(b|.a){0,2}a)+?", "bbb;aaa\n")]
+    // A loop whose body can match empty: where the iteration started steers the resume (no memo at all).
+    [InlineData(@"(?:ab|a;|ba|bb|b;|;a|;b| a| b|\s?|aa)*", "abb;abba \naa")]
+    public void ResumesKeptOutOfTheMemoKeepThePlainResult(string source, string input)
+    {
+        var pattern = Pattern(source);
+        var plain = pattern.CreateWorkspace();
+        plain.Matcher.MemoAfter = long.MaxValue;
+        var a = new RegexCapture[pattern.GroupCount];
+        var b = new RegexCapture[pattern.GroupCount];
+        // The memo starts at a backtrack: each threshold starts it at another point of the search.
+        for (var after = 0; after <= 48; after++)
+        {
+            var memo = pattern.CreateWorkspace();
+            memo.Matcher.MemoAfter = after;
+            for (var start = 0; start <= input.Length; start++)
+            {
+                var expected = plain.FindCaptures(input, start, b, out _);
+                var actual = memo.FindCaptures(input, start, a, out _);
+                Assert.True(expected == actual, $"from {start}, memo after {after}: {actual}, expected {expected}");
+                Assert.True(a.AsSpan().SequenceEqual(b), $"from {start}, memo after {after}");
+            }
+        }
+    }
+
+    [Fact]
+    public void LongLinesStartTheMemoOnlyForSearchesThatEarnIt()
+    {
+        // The memo is cleared when a search starts it, and its size grows with the line: on a 40,000-unit line a search
+        // that backtracks a few hundred units must not clear 200 KB first, while one that backtracks for long still
+        // gets its memo and stays linear.
+        var pattern = Pattern(LocalVariableDeclaration);
+        const string statement = "service.Client.Load(id); int value = other.Thing.Get(x); ";
+        var ordinary = string.Concat(Enumerable.Repeat(statement, 40_000 / statement.Length));
+        var memoBytes = 8L * (((long)pattern.Program.MemoSlotCount * (ordinary.Length + 1) + 63) >> 6);
+        var workspace = pattern.CreateWorkspace();
+        Assert.Equal(RegexSearchStatus.Match, workspace.Find(ordinary, 0, out var match));
+        Assert.Equal(new RegexMatchRange(25, 10), match);
+        Assert.True(workspace.LastWork > workspace.Matcher.MemoAfter, $"{workspace.LastWork} units");
+        Assert.True(workspace.Matcher.ReservedBytes < memoBytes, $"{workspace.Matcher.ReservedBytes} bytes reserved, the memo takes {memoBytes}");
+
+        var dotted = string.Join(".", Enumerable.Repeat("Identifier", ordinary.Length / 11)) + "(argument);";
+        Assert.Equal(RegexSearchStatus.NoMatch, workspace.IsMatch(dotted));
+        Assert.True(workspace.LastWork < 120L * dotted.Length, $"{workspace.LastWork} for {dotted.Length} units");
+        Assert.True(workspace.Matcher.ReservedBytes >= memoBytes, $"{workspace.Matcher.ReservedBytes} bytes reserved, the memo takes {memoBytes}");
+    }
+
     [Fact]
     public void MemoMatchesThePlainBacktracker()
     {

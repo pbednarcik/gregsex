@@ -76,7 +76,11 @@ internal sealed class OnigMatcher
     // its attempts: what follows a resume depends only on that pair, so a pair that failed once fails again. Started
     // once a search has done MemoAfter work, so searches that barely backtrack never clear it (tests lower it to cover
     // every search); everyday lines backtrack a few hundred units in C#'s and TypeScript's declaration and call rules.
+    // Clearing it costs its size, so a search also waits until it has done one unit of work per MemoBitsPerWork bits:
+    // on a long line, searches that each do little work would otherwise spend their time clearing a memo they barely
+    // read (three times the search itself for C#'s local-variable-declaration over 40,000 units).
     internal long MemoAfter { get; set; } = 128;
+    private const int MemoBitsPerWorkShift = 11;
     private const long MaxMemoBits = 1L << 25;
     private ulong[] _memo = [];
     private bool _memoOn;
@@ -705,6 +709,7 @@ internal sealed class OnigMatcher
         var slots = program.MemoSlots;
         var memo = _memoOn ? _memo : null;
         var stride = input.Length + 1;
+        var memoAt = slots is null ? long.MaxValue : Math.Max(MemoAfter, ((long)program.MemoSlotCount * stride) >> MemoBitsPerWorkShift);
 
         while (true)
         {
@@ -1419,12 +1424,13 @@ internal sealed class OnigMatcher
                     room = _stopAt - _work;
                 }
 
-                if (memo is null && slots is not null && _work + work > MemoAfter)
+                if (memo is null && _work + work > memoAt)
                 {
                     memo = StartMemo(program, input.Length);
                     if (memo is null)
                     {
                         slots = null;
+                        memoAt = long.MaxValue;
                     }
                 }
 

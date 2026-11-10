@@ -134,7 +134,9 @@ start, so `LimitExceededCount` can be lower than with no limit, and a pattern th
 stays available for the rest of the string.
 As at Oniguruma's `SubexpCallMaxNestLevel` (20), a call nested 19 deep fails that path and the search goes on.
 
-A search that has done 128 work units starts a failure memo over the backtrack resumes whose continuation depends
+A search that has done 128 work units, or one unit per 2,048 bits of the memo where that is more (starting the memo
+clears it, so on a very long line a search that backtracks little does not pay for one), starts a failure memo over
+the backtrack resumes whose continuation depends
 only on their instruction and position: those outside the bodies of called groups (which return to their caller),
 look-arounds (which continue from where they were entered) and atomic groups or possessive loops (which drop what
 their body left to try). Arriving at a run's continuation counts as a resume there. It applies when
