@@ -982,15 +982,18 @@ internal sealed class OnigCompiler
             _code[j] = Here;
         }
 
-        if (switchIndex >= 0)
+        if (branchFor is not null)
         {
-            var table = new int[AltSwitchKeys];
+            // The branch numbers become the table in place: each entry turns into its branch's pc.
             for (var key = 0; key < AltSwitchKeys; key++)
             {
-                table[key] = branchFor![key] < 0 ? -1 : entries[branchFor[key]];
+                if (branchFor[key] >= 0)
+                {
+                    branchFor[key] = entries[branchFor[key]];
+                }
             }
 
-            _altSwitches[switchIndex] = table;
+            _altSwitches[switchIndex] = branchFor;
         }
     }
 
